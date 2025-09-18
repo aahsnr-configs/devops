@@ -1,49 +1,55 @@
-# /flake.nix
 {
-  description = "A high-performance Python development environment with Jupyter";
+  description = "A high-performance Python 3.13 development environment";
 
-  # Define the inputs for our flake.
-  # 'nixpkgs' points to the unstable channel for the latest packages.
-  # 'flake-utils' is a helper library to easily support multiple systems.
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  # Define the outputs of our flake.
-  # We use flake-utils to generate outputs for each supported system.
-  outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
-        # Create an overlay to apply our custom configurations to nixpkgs.
-        # Overlays are a way to modify the package set.
+        # --- Overlays ---
+        # Overlays are a way to modify the final Nix package set (pkgs).
+        # We use an overlay here to replace the default Python 3.13 with our
+        # own customized, performance-optimized version.
         overlays = [
           (final: prev: {
-            # This overlay customizes the Python 3.11 package set.
-            python311 = prev.python311.override {
-              # Enable non-reproducible, performance-oriented compiler optimizations.
-              # This can result in faster code at the cost of determinism.
+            # This overlay targets the 'python313' package.
+            python313 = prev.python313.override {
               enableOptimizations = true;
-              # Enable Link-Time Optimization (LTO), which can further improve performance.
               enableLTO = true;
             };
           })
         ];
 
+        # --- Package Set ---
         # Import nixpkgs for the specific system, applying our overlays.
+        # Now, whenever we reference 'pkgs.python313', it will refer to our
+        # optimized version, not the default one.
         pkgs = import nixpkgs {
           inherit system;
           inherit overlays;
         };
 
-        # Define the list of Python packages needed for the environment.
-        # These will be built using the optimized Python interpreter.
-        pythonPackages = with pkgs.python311Packages; [
+        # --- Python Packages ---
+        # Define the list of Python packages for the environment.
+        # CRITICAL: We use 'pkgs.python313Packages' here. Because 'pkgs' has
+        # our overlay applied, 'python313Packages' is now the package set
+        # corresponding to our *optimized* Python interpreter. This ensures
+        # all Python libraries are built correctly against it.
+        pythonLibs = with pkgs.python313Packages; [
           # Essential development tools
           pip
           virtualenv
 
-          # Jupyter environment for notebooks
+          # Jupyter environment for interactive notebooks
           jupyter
 
           # Common data science libraries
@@ -53,24 +59,22 @@
 
       in
       {
-        # The 'devShell' is the main development environment.
-        # It's what `nix develop` or `direnv` will activate.
+        # --- Development Shell ---
+        # The 'devShell' is the main development environment that `nix develop`
+        # or `direnv` will activate.
         devShells.default = pkgs.mkShell {
-          # The buildInputs are the packages available in the shell.
+          # The buildInputs are the packages made available in the shell's PATH.
           buildInputs = [
-            # The optimized Python interpreter
-            pkgs.python311
-          ] ++ pythonPackages;
+            # Add our optimized Python interpreter to the shell.
+            pkgs.python313
+          ]
+          ++ pythonLibs; # Add all the Python libraries.
 
-          # Shell hook to provide a welcome message upon entering the environment.
+          # A shell hook is a command that runs when you enter the environment.
           shellHook = ''
-            echo "🐍 Python 3.11 High-Performance Environment (with LTO) is active."
-            echo "🐍 Jupyter and other tools are available in your PATH."
+            echo "Entering python shell"
           '';
         };
-
-        # A formatter to ensure consistent code style for .nix files.
-        # Run with `nix fmt`.
-        formatters.default = pkgs.nixpkgs-fmt;
-      });
+      }
+    );
 }
