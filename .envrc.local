@@ -1,0 +1,2 @@
+# in .envrc.local
+export DEV_ENV="all"
