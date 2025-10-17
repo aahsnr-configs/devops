@@ -1,89 +1,91 @@
 {
-  description = "A reproducible and high-performance Python 3.13 development environment.";
+  description = "A Python environment with targeted x86-64-v3 optimizations, built with GCC15";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs =
-    {
-      self,
-      nixpkgs,
-      flake-utils,
-    }:
-    # The `eachDefaultSystem` function from `flake-utils` generates an attribute set
-    # for each of the default systems (x86_64-linux, aarch64-linux, x86_64-darwin, aarch64-darwin).
-    # This avoids hardcoding system architectures and makes the flake more portable.
-    flake-utils.lib.eachDefaultSystem (
-      system:
+  outputs = { self, nixpkgs, flake-utils }:
+    flake-utils.lib.eachDefaultSystem (system:
       let
-        # 1. Define Overlays for Customizing Packages:
-        # Overlays are the idiomatic way to modify the nixpkgs package set.
-        # Here, we create an overlay to build a performance-optimized Python interpreter.
-        overlays = [
-          (final: prev: {
-            optimizedPython = prev.python313.override {
-              enableOptimizations = true;
-              enableLTO = true; # Enable Link Time Optimization
-            };
-          })
-        ];
-
-        # 2. Instantiate nixpkgs for the Current System with Overlays:
-        # We import nixpkgs for the specific system, applying our custom overlays.
-        # This makes `pkgs.optimizedPython` available.
+        lib = nixpkgs.lib;
         pkgs = import nixpkgs {
           inherit system;
-          inherit overlays;
+          config.allowUnfree = true;
         };
 
-        # 3. Define Python Packages:
-        # A list of Python packages to be included in the development environment.
-        # Managing this list separately improves readability and maintainability.
-        pythonPackages =
-          python-pkgs: with python-pkgs; [
-            ruff
-            mypy
-            pandas
-            numpy
-            scipy
-            requests
-            debugpy
+        optimizedPkgs = import nixpkgs {
+          inherit system;
+          config.allowUnfree = true;
+          overlays = [
+            (final: prev:
+              lib.optionalAttrs (prev.stdenv.hostPlatform.system == "x86_64-linux") {
+                bootstrapTools = prev.bootstrapTools.overrideAttrs (old: {
+                  NIX_CFLAGS_COMPILE = "-march=x86-64-v3 -flto=auto -fprofile-use";
+                });
+              })
           ];
+        };
 
-        # 4. Create the Python Environment:
-        # Use `withPackages` on our optimized Python to create a consistent environment
-        # for both development and any potential packaging tasks.
-        pythonEnv = pkgs.optimizedPython.withPackages pythonPackages;
+        # --- Component Definitions ---
 
-        # 5. Define Non-Python Development Tools:
-        # A list of essential development tools that are not Python packages.
+        pythonOptimized = (optimizedPkgs.python313.overrideAttrs (oldAttrs: {
+          hardeningDisable = [ "all" ];
+        })).override {
+          stdenv = optimizedPkgs.overrideCC optimizedPkgs.stdenv optimizedPkgs.gcc15;
+
+          enableOptimizations = true; # PGO
+          enableLTO = true;
+          reproducibleBuild = false;
+        };
+
+        pythonPackages = with pythonOptimized.pkgs; [
+          pytorch torchvision torchaudio
+          jupyterlab notebook ipykernel ipywidgets
+          numpy scipy pandas scikit-learn matplotlib seaborn
+          debugpy
+        ];
+
+        pythonDevTools = with optimizedPkgs; [
+          ruff mypy basedpyright
+        ];
+
         devTools = with pkgs; [
-          # Language Server Protocol for Python
-          basedpyright
+          gcc15
+          cmake
+          ninja
+          pkg-config
+          gnumake
         ];
 
       in
       {
-        # 6. Define the Development Shell:
-        # The `devShells.default` output is the entry point for `nix develop`.
         devShells.default = pkgs.mkShell {
-          # The `packages` attribute is the modern and preferred way over `buildInputs`.
-          packages = [
-            pythonEnv
-          ]
-          ++ devTools;
+          buildInputs =
+            devTools           # Standard tools (including gcc15)
+            ++ pythonDevTools  # Optimized tools
+            ++ pythonPackages  # Optimized libraries
+            ++ [ pythonOptimized ]; # The PGO-optimized interpreter
 
-          # The shellHook provides useful feedback to the user upon entering the environment.
           shellHook = ''
-            echo "
-            Entering optimized Python 3.13 development environment.
-            Interpreter: $(which python)
-            Version:     $(python --version)
-            "
+            echo "====================================================="
+            echo "  Deep Learning Shell (GCC15, Max Opts, x86-64-v3)"
+            echo "====================================================="
+            echo "✓ Python:   $(python --version) (PGO, LTO, No Hardening)"
+            echo "✓ GCC:      $(gcc --version | head -n 1)"
+            echo "✓ PyTorch:  $(python -c 'import torch; print(torch.__version__)' 2/dev/null || echo 'Not found')"
+            echo "✓ Tools:    Ruff, MyPy, Basedpyright, Jupyter"
+            echo "====================================================="
           '';
         };
+
+        packages = {
+          default = pythonOptimized.withPackages (ps: pythonPackages);
+          python = pythonOptimized;
+        };
+
+        formatter = pkgs.nixpkgs-fmt;
       }
     );
 }
